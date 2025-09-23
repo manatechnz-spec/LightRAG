@@ -1092,7 +1092,7 @@ class LightRAG:
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
-                "content_summary": get_content_summary(content_data["content"]),
+                "content_summary": (content_data["content"] or "")[:200],
                 "content_length": len(content_data["content"]),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
