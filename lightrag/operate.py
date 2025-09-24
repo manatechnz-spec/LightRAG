@@ -2044,7 +2044,7 @@ async def extract_entities(
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+       async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         """Process a single chunk
         Args:
             chunk_key_dp (tuple[str, TextChunkSchema]):
@@ -2059,112 +2059,24 @@ async def extract_entities(
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
-        # Create cache keys collector for batch processing
-        cache_keys_collector = []
+        # Instead of calling the LLM, just use the raw text content
+        final_result = content
+        timestamp = None
 
-        # Get initial extraction
-        entity_extraction_system_prompt = PROMPTS[
-            "entity_extraction_system_prompt"
-        ].format(**{**context_base, "input_text": content})
-        entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
-            **{**context_base, "input_text": content}
-        )
-        entity_continue_extraction_user_prompt = PROMPTS[
-            "entity_continue_extraction_user_prompt"
-        ].format(**{**context_base, "input_text": content})
+        # Directly create a raw node so the graph has the document text
+        maybe_nodes = {
+            chunk_key: [{
+                "id": f"{chunk_key}-raw",
+                "entity": content,
+                "type": "raw_text",
+                "description": content,
+                "source": file_path,
+            }]
+        }
+        maybe_edges = {}
 
-# Instead of calling the LLM, just use the raw text content
-final_result = content
-timestamp = None
+        return maybe_nodes, maybe_edges
 
-# Directly create a raw node so the graph has the document text
-maybe_nodes = {
-    chunk_key: [{
-        "id": f"{chunk_key}-raw",
-        "entity": content,
-        "type": "raw_text",
-        "description": content,
-        "source": file_path,
-    }]
-}
-
-
-        history = pack_user_ass_to_openai_messages(
-            entity_extraction_user_prompt, final_result
-        )
-
-        # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result,
-            chunk_key,
-            timestamp,
-            file_path,
-            tuple_delimiter=context_base["tuple_delimiter"],
-            completion_delimiter=context_base["completion_delimiter"],
-        )
-
-        # Process additional gleaning results only 1 time when entity_extract_max_gleaning is greater than zero.
-        if entity_extract_max_gleaning > 0:
-            glean_result, timestamp = await use_llm_func_with_cache(
-                entity_continue_extraction_user_prompt,
-                use_llm_func,
-                system_prompt=entity_extraction_system_prompt,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-                chunk_id=chunk_key,
-                cache_keys_collector=cache_keys_collector,
-            )
-
-            # Process gleaning result separately with file path
-            glean_nodes, glean_edges = await _process_extraction_result(
-                glean_result,
-                chunk_key,
-                timestamp,
-                file_path,
-                tuple_delimiter=context_base["tuple_delimiter"],
-                completion_delimiter=context_base["completion_delimiter"],
-            )
-
-            # Merge results - compare description lengths to choose better version
-            for entity_name, glean_entities in glean_nodes.items():
-                if entity_name in maybe_nodes:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_nodes[entity_name][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_entities[0].get("description", "") or "")
-
-                    if glean_desc_len > original_desc_len:
-                        maybe_nodes[entity_name] = list(glean_entities)
-                    # Otherwise keep original version
-                else:
-                    # New entity from gleaning stage
-                    maybe_nodes[entity_name] = list(glean_entities)
-
-            for edge_key, glean_edges in glean_edges.items():
-                if edge_key in maybe_edges:
-                    # Compare description lengths and keep the better one
-                    original_desc_len = len(
-                        maybe_edges[edge_key][0].get("description", "") or ""
-                    )
-                    glean_desc_len = len(glean_edges[0].get("description", "") or "")
-
-                    if glean_desc_len > original_desc_len:
-                        maybe_edges[edge_key] = list(glean_edges)
-                    # Otherwise keep original version
-                else:
-                    # New edge from gleaning stage
-                    maybe_edges[edge_key] = list(glean_edges)
-
-        # Batch update chunk's llm_cache_list with all collected cache keys
-        if cache_keys_collector and text_chunks_storage:
-            await update_chunk_cache_list(
-                chunk_key,
-                text_chunks_storage,
-                cache_keys_collector,
-                "entity_extraction",
-            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
