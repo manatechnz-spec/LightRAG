@@ -2030,7 +2030,7 @@ async def extract_entities(
             chunk_key: [{
                 "id": f"{chunk_key}-raw",
                 "entity": content,
-                "type": "raw_text",
+                "entity_type": "raw_text",  # <-- add this field
                 "description": content,
                 "source": file_path,
             }]
