@@ -2054,6 +2054,28 @@ async def extract_entities(
     return results
 
 
+async def kg_query(
+    query: str,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
+    chunks_vdb: BaseVectorStorage = None,
+    return_raw_data: bool = False,
+) -> str | AsyncIterator[str] | dict[str, Any]:
+    """
+    Minimal placeholder implementation of kg_query so imports don’t break.
+    For now, bypass LLM and just return the raw query.
+    """
+    if not query:
+        return PROMPTS["fail_response"]
+
+    return {"raw_query": query, "note": "kg_query bypassed LLM"}
+
 
 async def get_keywords_from_query(
     query: str,
