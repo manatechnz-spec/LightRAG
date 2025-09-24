@@ -2007,25 +2007,25 @@ async def merge_nodes_and_edges(
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
     global_config: dict[str, str],
-    pipeline_status: dict = None,
+    pipeline_status: dict | None = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
     """
-    Bypass LLM completely — ingest raw text chunks as nodes, no summarisation, no edges.
+    Bypass LLM completely — store the raw chunk text as a single node per chunk (no edges).
+    This is a safe, sequential implementation to avoid async/indentation issues.
     """
     ordered_chunks = list(chunks.items())
-    processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-        nonlocal processed_chunks
-        chunk_key, chunk_dp = chunk_key_dp
-        content = chunk_dp["content"]
+    results: list[tuple[dict, dict]] = []
+
+    for idx, (chunk_key, chunk_dp) in enumerate(ordered_chunks, start=1):
+        content = chunk_dp.get("content", "")
         file_path = chunk_dp.get("file_path", "unknown_source")
 
-        # Create raw node for the chunk
+        # One node per chunk; no edges
         maybe_nodes = {
             chunk_key: [{
                 "id": f"{chunk_key}-raw",
@@ -2037,11 +2037,10 @@ async def extract_entities(
         }
         maybe_edges = {}
 
-        # Update progress
-        processed_chunks += 1
+        # Logging + optional pipeline status
         log_message = (
-            f"Chunk {processed_chunks} of {total_chunks} ingested "
-            f"{len(maybe_nodes)} node(s), {len(maybe_edges)} edge(s) [{chunk_key}]"
+            f"Chunk {idx} of {total_chunks} extracted "
+            f"{len(maybe_nodes)} Ent + {len(maybe_edges)} Rel {chunk_key}"
         )
         logger.info(log_message)
 
@@ -2050,41 +2049,7 @@ async def extract_entities(
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-        return maybe_nodes, maybe_edges
-
-    # Run all chunks concurrently with semaphore
-    chunk_max_async = global_config.get("llm_model_max_async", 4)
-    semaphore = asyncio.Semaphore(chunk_max_async)
-
-    async def _process_with_semaphore(chunk):
-        async with semaphore:
-            try:
-                return await _process_single_content(chunk)
-            except Exception as e:
-                chunk_id = chunk[0]
-                raise create_prefixed_exception(e, chunk_id) from e
-
-    tasks = [asyncio.create_task(_process_with_semaphore(c)) for c in ordered_chunks]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-
-    results, first_exception = [], None
-    for task in done:
-        try:
-            if task.exception() is not None:
-                if first_exception is None:
-                    first_exception = task.exception()
-            else:
-                results.append(task.result())
-        except Exception as e:
-            if first_exception is None:
-                first_exception = e
-
-    if first_exception is not None:
-        for pending_task in pending:
-            pending_task.cancel()
-        if pending:
-            await asyncio.wait(pending)
-        raise create_prefixed_exception(first_exception, f"C[{processed_chunks+1}/{total_chunks}]") from first_exception
+        results.append((maybe_nodes, maybe_edges))
 
     return results
 
