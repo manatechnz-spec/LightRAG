@@ -2073,15 +2073,22 @@ async def extract_entities(
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})
 
-        final_result, timestamp = await use_llm_func_with_cache(
-            entity_extraction_user_prompt,
-            use_llm_func,
-            system_prompt=entity_extraction_system_prompt,
-            llm_response_cache=llm_response_cache,
-            cache_type="extract",
-            chunk_id=chunk_key,
-            cache_keys_collector=cache_keys_collector,
-        )
+# Bypass LLM and just use raw text directly
+final_result = content
+timestamp = None
+
+maybe_nodes = {
+    chunk_key: [{
+        "id": f"{chunk_key}-raw",
+        "entity": content,
+        "type": "raw_text",
+        "description": content,
+        "source": file_path,
+    }]
+}
+maybe_edges = {}
+return maybe_nodes, maybe_edges
+
 
         history = pack_user_ass_to_openai_messages(
             entity_extraction_user_prompt, final_result
