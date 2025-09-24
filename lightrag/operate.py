@@ -2073,10 +2073,11 @@ async def extract_entities(
             "entity_continue_extraction_user_prompt"
         ].format(**{**context_base, "input_text": content})
 
-# Bypass LLM and just use raw text directly
+# Instead of calling the LLM, just use the raw text content
 final_result = content
 timestamp = None
 
+# Directly create a raw node so the graph has the document text
 maybe_nodes = {
     chunk_key: [{
         "id": f"{chunk_key}-raw",
@@ -2086,8 +2087,6 @@ maybe_nodes = {
         "source": file_path,
     }]
 }
-maybe_edges = {}
-return maybe_nodes, maybe_edges
 
 
         history = pack_user_ass_to_openai_messages(
