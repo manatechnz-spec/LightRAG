@@ -2012,71 +2012,49 @@ async def extract_entities(
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
-    use_llm_func: callable = global_config["llm_model_func"]
-    entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
-
+    """Bypass LLM completely — just store raw text as nodes, no edges"""
     ordered_chunks = list(chunks.items())
-    # add language and example number params to prompt
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
-    entity_types = global_config["addon_params"].get(
-        "entity_types", DEFAULT_ENTITY_TYPES
-    )
-
-    examples = "\n".join(PROMPTS["entity_extraction_examples"])
-
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
-        language=language,
-    )
-    # add example's format
-    examples = examples.format(**example_context_base)
-
-    context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
-        examples=examples,
-        language=language,
-    )
-
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
-async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-    """Process a single chunk by bypassing LLM and storing raw text"""
-    nonlocal processed_chunks
-    chunk_key = chunk_key_dp[0]
-    chunk_dp = chunk_key_dp[1]
-    content = chunk_dp["content"]
-    file_path = chunk_dp.get("file_path", "unknown_source")
+    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+        """Process a single chunk by bypassing LLM and storing raw text"""
+        nonlocal processed_chunks
+        chunk_key = chunk_key_dp[0]
+        chunk_dp = chunk_key_dp[1]
+        content = chunk_dp["content"]
+        file_path = chunk_dp.get("file_path", "unknown_source")
 
-    # Bypass LLM
-    maybe_nodes = {
-        chunk_key: [{
-            "id": f"{chunk_key}-raw",
-            "entity": content,
-            "type": "raw_text",
-            "description": content,
-            "source": file_path,
-        }]
-    }
+        # Bypass LLM — just store raw text as a node
+        maybe_nodes = {
+            chunk_key: [{
+                "id": f"{chunk_key}-raw",
+                "entity": content,
+                "type": "raw_text",
+                "description": content,
+                "source": file_path,
+            }]
+        }
         maybe_edges = {}
 
-    processed_chunks += 1
-    entities_count = len(maybe_nodes)
-    relations_count = len(maybe_edges)
-    log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
-    logger.info(log_message)
-    if pipeline_status is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+        # Logging and pipeline status update
+        processed_chunks += 1
+        log_message = (
+            f"Chunk {processed_chunks} of {total_chunks} extracted "
+            f"{len(maybe_nodes)} Ent + {len(maybe_edges)} Rel {chunk_key}"
+        )
+        logger.info(log_message)
 
-    return maybe_nodes, maybe_edges
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
-    # Get max async tasks limit from global_config
+        return maybe_nodes, maybe_edges
+
+    # ----------------------------
+    # Run all chunks concurrently
+    # ----------------------------
     chunk_max_async = global_config.get("llm_model_max_async", 4)
     semaphore = asyncio.Semaphore(chunk_max_async)
 
@@ -2085,23 +2063,15 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
             try:
                 return await _process_single_content(chunk)
             except Exception as e:
-                chunk_id = chunk[0]  # Extract chunk_id from chunk[0]
+                chunk_id = chunk[0]
                 prefixed_exception = create_prefixed_exception(e, chunk_id)
                 raise prefixed_exception from e
 
-    tasks = []
-    for c in ordered_chunks:
-        task = asyncio.create_task(_process_with_semaphore(c))
-        tasks.append(task)
-
-    # Wait for tasks to complete or for the first exception to occur
-    # This allows us to cancel remaining tasks if any task fails
+    tasks = [asyncio.create_task(_process_with_semaphore(c)) for c in ordered_chunks]
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
-    # Check if any task raised an exception and ensure all exceptions are retrieved
-    first_exception = None
     chunk_results = []
-
+    first_exception = None
     for task in done:
         try:
             exception = task.exception()
@@ -2114,240 +2084,18 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
             if first_exception is None:
                 first_exception = e
 
-    # If any task failed, cancel all pending tasks and raise the first exception
+    # Handle errors
     if first_exception is not None:
-        # Cancel all pending tasks
         for pending_task in pending:
             pending_task.cancel()
-
-        # Wait for cancellation to complete
         if pending:
             await asyncio.wait(pending)
-
-        # Add progress prefix to the exception message
         progress_prefix = f"C[{processed_chunks+1}/{total_chunks}]"
-
-        # Re-raise the original exception with a prefix
         prefixed_exception = create_prefixed_exception(first_exception, progress_prefix)
         raise prefixed_exception from first_exception
 
-    # If all tasks completed successfully, chunk_results already contains the results
-    # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
 
-
-@overload
-async def kg_query(
-    query: str,
-    knowledge_graph_inst: BaseGraphStorage,
-    entities_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
-    query_param: QueryParam,
-    global_config: dict[str, str],
-    hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str | None = None,
-    chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: Literal[True] = False,
-) -> dict[str, Any]: ...
-
-
-@overload
-async def kg_query(
-    query: str,
-    knowledge_graph_inst: BaseGraphStorage,
-    entities_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
-    query_param: QueryParam,
-    global_config: dict[str, str],
-    hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str | None = None,
-    chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: Literal[False] = False,
-) -> str | AsyncIterator[str]: ...
-
-
-async def kg_query(
-    query: str,
-    knowledge_graph_inst: BaseGraphStorage,
-    entities_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
-    query_param: QueryParam,
-    global_config: dict[str, str],
-    hashing_kv: BaseKVStorage | None = None,
-    system_prompt: str | None = None,
-    chunks_vdb: BaseVectorStorage = None,
-    return_raw_data: bool = False,
-) -> str | AsyncIterator[str] | dict[str, Any]:
-    if not query:
-        return PROMPTS["fail_response"]
-
-    if query_param.model_func:
-        use_model_func = query_param.model_func
-    else:
-        use_model_func = global_config["llm_model_func"]
-        # Apply higher priority (5) to query relation LLM function
-        use_model_func = partial(use_model_func, _priority=5)
-
-    # Handle cache
-    args_hash = compute_args_hash(
-        query_param.mode,
-        query,
-        query_param.response_type,
-        query_param.top_k,
-        query_param.chunk_top_k,
-        query_param.max_entity_tokens,
-        query_param.max_relation_tokens,
-        query_param.max_total_tokens,
-        query_param.hl_keywords or [],
-        query_param.ll_keywords or [],
-        query_param.user_prompt or "",
-        query_param.enable_rerank,
-    )
-    cached_result = await handle_cache(
-        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
-    )
-    if cached_result is not None:
-        cached_response, _ = cached_result  # Extract content, ignore timestamp
-        if not query_param.only_need_context and not query_param.only_need_prompt:
-            return cached_response
-
-    hl_keywords, ll_keywords = await get_keywords_from_query(
-        query, query_param, global_config, hashing_kv
-    )
-
-    logger.debug(f"High-level keywords: {hl_keywords}")
-    logger.debug(f"Low-level  keywords: {ll_keywords}")
-
-    # Handle empty keywords
-    if ll_keywords == [] and query_param.mode in ["local", "hybrid", "mix"]:
-        logger.warning("low_level_keywords is empty")
-    if hl_keywords == [] and query_param.mode in ["global", "hybrid", "mix"]:
-        logger.warning("high_level_keywords is empty")
-    if hl_keywords == [] and ll_keywords == []:
-        if len(query) < 50:
-            logger.warning(f"Forced low_level_keywords to origin query: {query}")
-            ll_keywords = [query]
-        else:
-            return PROMPTS["fail_response"]
-
-    ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
-    hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
-
-    # If raw data is requested, get both context and raw data
-    if return_raw_data:
-        context_result = await _build_query_context(
-            query,
-            ll_keywords_str,
-            hl_keywords_str,
-            knowledge_graph_inst,
-            entities_vdb,
-            relationships_vdb,
-            text_chunks_db,
-            query_param,
-            chunks_vdb,
-            return_raw_data=True,
-        )
-
-        if isinstance(context_result, tuple):
-            context, raw_data = context_result
-            logger.debug(f"[kg_query] Context length: {len(context) if context else 0}")
-            logger.debug(
-                f"[kg_query] Raw data entities: {len(raw_data.get('entities', []))}, relationships: {len(raw_data.get('relationships', []))}, chunks: {len(raw_data.get('chunks', []))}"
-            )
-            return raw_data
-        else:
-            raise RuntimeError(
-                "Failed to build query context for raw data. Expected a tuple, but got a different type."
-            )
-
-    # Build context (normal flow)
-    context = await _build_query_context(
-        query,
-        ll_keywords_str,
-        hl_keywords_str,
-        knowledge_graph_inst,
-        entities_vdb,
-        relationships_vdb,
-        text_chunks_db,
-        query_param,
-        chunks_vdb,
-    )
-
-    if query_param.only_need_context and not query_param.only_need_prompt:
-        return context if context is not None else PROMPTS["fail_response"]
-    if context is None:
-        return PROMPTS["fail_response"]
-
-    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
-    sys_prompt = sys_prompt_temp.format(
-        context_data=context,
-        response_type=query_param.response_type,
-    )
-
-    user_query = (
-        "\n\n".join([query, query_param.user_prompt])
-        if query_param.user_prompt
-        else query
-    )
-
-    if query_param.only_need_prompt:
-        return "\n\n".join([sys_prompt, "---User Query---", user_query])
-
-    tokenizer: Tokenizer = global_config["tokenizer"]
-    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(
-        f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
-    )
-
-    response = await use_model_func(
-        user_query,
-        system_prompt=sys_prompt,
-        history_messages=query_param.conversation_history,
-        enable_cot=True,
-        stream=query_param.stream,
-    )
-    if isinstance(response, str) and len(response) > len(sys_prompt):
-        response = (
-            response.replace(sys_prompt, "")
-            .replace("user", "")
-            .replace("model", "")
-            .replace(query, "")
-            .replace("<system>", "")
-            .replace("</system>", "")
-            .strip()
-        )
-
-    if hashing_kv.global_config.get("enable_llm_cache"):
-        # Save to cache with query parameters
-        queryparam_dict = {
-            "mode": query_param.mode,
-            "response_type": query_param.response_type,
-            "top_k": query_param.top_k,
-            "chunk_top_k": query_param.chunk_top_k,
-            "max_entity_tokens": query_param.max_entity_tokens,
-            "max_relation_tokens": query_param.max_relation_tokens,
-            "max_total_tokens": query_param.max_total_tokens,
-            "hl_keywords": query_param.hl_keywords or [],
-            "ll_keywords": query_param.ll_keywords or [],
-            "user_prompt": query_param.user_prompt or "",
-            "enable_rerank": query_param.enable_rerank,
-        }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                mode=query_param.mode,
-                cache_type="query",
-                queryparam=queryparam_dict,
-            ),
-        )
-
-    return response
 
 
 async def get_keywords_from_query(
