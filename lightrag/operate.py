@@ -2030,9 +2030,10 @@ async def extract_entities(
             chunk_key: [{
                 "id": f"{chunk_key}-raw",
                 "entity": content,
-                "entity_type": "raw_text",  # <-- add this field
+                "entity_type": "raw_text",
                 "description": content,
                 "source": file_path,
+                "source_id": chunk_key,
             }]
         }
         maybe_edges = {}
