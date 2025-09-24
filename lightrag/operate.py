@@ -2045,37 +2045,37 @@ async def extract_entities(
     total_chunks = len(ordered_chunks)
 
        async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-        """Process a single chunk
-        Args:
-            chunk_key_dp (tuple[str, TextChunkSchema]):
-                ("chunk-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
-        Returns:
-            tuple: (maybe_nodes, maybe_edges) containing extracted entities and relationships
-        """
-        nonlocal processed_chunks
-        chunk_key = chunk_key_dp[0]
-        chunk_dp = chunk_key_dp[1]
-        content = chunk_dp["content"]
-        # Get file path from chunk data or use default
-        file_path = chunk_dp.get("file_path", "unknown_source")
+    """Process a single chunk by bypassing LLM and storing raw text"""
+    nonlocal processed_chunks
+    chunk_key = chunk_key_dp[0]
+    chunk_dp = chunk_key_dp[1]
+    content = chunk_dp["content"]
+    file_path = chunk_dp.get("file_path", "unknown_source")
 
-        # Instead of calling the LLM, just use the raw text content
-        final_result = content
-        timestamp = None
+    # Bypass LLM
+    maybe_nodes = {
+        chunk_key: [{
+            "id": f"{chunk_key}-raw",
+            "entity": content,
+            "type": "raw_text",
+            "description": content,
+            "source": file_path,
+        }]
+    }
+    maybe_edges = {}
 
-        # Directly create a raw node so the graph has the document text
-        maybe_nodes = {
-            chunk_key: [{
-                "id": f"{chunk_key}-raw",
-                "entity": content,
-                "type": "raw_text",
-                "description": content,
-                "source": file_path,
-            }]
-        }
-        maybe_edges = {}
+    processed_chunks += 1
+    entities_count = len(maybe_nodes)
+    relations_count = len(maybe_edges)
+    log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
+    logger.info(log_message)
+    if pipeline_status is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
 
-        return maybe_nodes, maybe_edges
+    return maybe_nodes, maybe_edges
+
 
 
         processed_chunks += 1
