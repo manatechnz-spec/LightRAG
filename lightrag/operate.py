@@ -2044,7 +2044,7 @@ async def extract_entities(
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
 
-       async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
     """Process a single chunk by bypassing LLM and storing raw text"""
     nonlocal processed_chunks
     chunk_key = chunk_key_dp[0]
@@ -2075,8 +2075,6 @@ async def extract_entities(
             pipeline_status["history_messages"].append(log_message)
 
     return maybe_nodes, maybe_edges
-
-
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)
