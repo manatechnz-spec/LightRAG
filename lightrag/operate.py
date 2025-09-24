@@ -2062,7 +2062,7 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
             "source": file_path,
         }]
     }
-    maybe_edges = {}
+        maybe_edges = {}
 
     processed_chunks += 1
     entities_count = len(maybe_nodes)
@@ -2075,19 +2075,6 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
             pipeline_status["history_messages"].append(log_message)
 
     return maybe_nodes, maybe_edges
-
-        processed_chunks += 1
-        entities_count = len(maybe_nodes)
-        relations_count = len(maybe_edges)
-        log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel {chunk_key}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-        # Return the extracted nodes and edges for centralized processing
-        return maybe_nodes, maybe_edges
 
     # Get max async tasks limit from global_config
     chunk_max_async = global_config.get("llm_model_max_async", 4)
